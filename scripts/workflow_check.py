@@ -124,6 +124,42 @@ def main():
             need('00:00:01.500 --> 00:00:02.000' in plan['vtt'], 'second caption mapping mismatch')
             need('&lt;幅度&gt;' in plan['vtt'], 'caption markup not escaped')
             observe('captions', 'source cue split and clipped into two escaped output intervals')
+            if args.workflow in ('all', 'overlap-transition'):
+                # A third span requests overlaps at both boundaries. The cue in
+                # the middle span protects its head, so the entering dissolve is
+                # reduced with an explicit, reviewable reason rather than a
+                # silent shrink or a rejected sheet.
+                transition_sheet = dict(name='overlap-calibration', spans=[
+                    dict(source_id=sid, in_ms=0, out_ms=2000, gain_db=0),
+                    dict(source_id=sid, in_ms=500, out_ms=2500, gain_db=0),
+                    dict(source_id=sid, in_ms=2500, out_ms=4000, gain_db=0)],
+                    transitions=[dict(before_index=1, requested_ms=400),
+                                 dict(before_index=2, requested_ms=400)],
+                    markers=[dict(source_id=sid, at_ms=700, label='key-frame')],
+                    cues=[dict(source_id=sid, start_ms=900, end_ms=1400, text='关键对白')])
+                ts = request('POST', '/sheets', transition_sheet, status=201)
+                tplan = request('GET', '/sheets/'+ts['id']+'/preview?recipe_id='+rp)
+                decisions = {t['before_index']: t for t in tplan['transitions']}
+                need(decisions[1]['effective_ms'] <= 200, 'marker/cue did not protect the middle span head')
+                need(any(x['code'] == 'protected_content' for x in decisions[1]['reasons']), 'protection not explained')
+                need(decisions[2]['effective_ms'] <= 400, 'leaving overlap out of bounds')
+                need(decisions[1]['effective_ms'] + decisions[2]['effective_ms'] <= 2000, 'middle span overspent')
+                compact = 2000 + 2000 + 1500 - decisions[1]['effective_ms'] - decisions[2]['effective_ms']
+                need(tplan['duration_ms'] == compact, 'overlap duration accounting mismatch')
+                tr = request('POST', '/renders', dict(sheet_id=ts['id'], sheet_revision=1,
+                                                       recipe_id=rp, recipe_revision=1),
+                             {'Idempotency-Key': 'transition-render'}, status=202)
+                tdone = wait_render(tr['id'])
+                need(tdone['state'] == 'succeeded', str(tdone.get('attempts')))
+                need(tdone['plan']['transitions'] == tplan['transitions'], 'frozen render diverged from preview plan')
+                tfile = scratch/'transition.mp4'
+                tfile.write_bytes(request('GET', '/renders/'+tr['id']+'/artifact', raw=True))
+                probe_out = subprocess.run([os.environ.get('FFPROBE_BIN', 'ffprobe'), '-v', 'error',
+                                            '-show_format', '-of', 'json', str(tfile)],
+                                           capture_output=True, text=True, check=True)
+                actual = float(json.loads(probe_out.stdout)['format']['duration']) * 1000
+                need(abs(actual - compact) <= max(150, 2000/20), 'MP4 duration does not match overlap plan')
+                observe('overlap-transition', 'reviewable overlap clamp frozen into a real xfade MP4')
             if args.workflow in ('all', 'loudness'):
                 loud = request('POST', '/sources/'+sid+'/loudness')
                 need(loud['integrated_lufs'] is not None and not loud['silent'], 'loudness scan failed')

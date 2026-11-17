@@ -160,6 +160,29 @@
       "verification": "python3 scripts/workflow_check.py --workflow captions"
     },
     {
+      "id": "overlap-transition",
+      "name": "overlap-transition",
+      "entry": "POST /forge/v1/sheets (transitions) + POST /forge/v1/renders",
+      "success": "可审阅的交叠决策冻结进真实xfade/acrossfade MP4",
+      "failure": "非法转场声明拒绝；合法剪辑永不整体拒绝，只能记录缩减原因",
+      "steps": [
+        "入口解码与领域事实读取",
+        "在不覆盖对白与关键画面的前提下求解最大可行交叠并记录原因",
+        "预览计划、成片与交付包共用同一份冻结时间关系"
+      ],
+      "module_ids": [
+        "http",
+        "application",
+        "timeline",
+        "captions",
+        "encoding",
+        "inspection",
+        "domain",
+        "journal"
+      ],
+      "verification": "python3 scripts/workflow_check.py --workflow overlap-transition"
+    },
+    {
       "id": "loudness",
       "name": "loudness",
       "entry": "POST /forge/v1/sources/{id}/loudness",

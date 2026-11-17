@@ -72,7 +72,81 @@ func ValidateSheet(s Sheet, sources map[string]Source) error {
 			return Invalid("cue %d has invalid text", i)
 		}
 	}
+	if len(s.Markers) > 200 {
+		return Invalid("sheet exceeds 200 markers")
+	}
+	for i, m := range s.Markers {
+		source, ok := sources[m.SourceID]
+		if !ok {
+			return Missing("marker source", m.SourceID)
+		}
+		if m.AtMS < 0 || m.AtMS >= source.Media.DurationMS {
+			return Invalid("marker %d is outside source duration", i)
+		}
+		if !utf8.ValidString(m.Label) || len(m.Label) > 200 || strings.ContainsAny(m.Label, "\x00\r") {
+			return Invalid("marker %d has invalid label", i)
+		}
+	}
+	// A transition dissolves the tail of span k-1 against the head of span k.
+	// Boundary indices must be unique, in range, and the requested overlap is
+	// bounded so a malformed sheet can never consume the whole composition.
+	boundaries := map[int]bool{}
+	for i, t := range s.Transitions {
+		if t.BeforeIndex < 1 || t.BeforeIndex >= len(s.Spans) {
+			return Invalid("transition %d does not sit between two spans", i)
+		}
+		if boundaries[t.BeforeIndex] {
+			return Invalid("transition boundary %d is declared twice", t.BeforeIndex)
+		}
+		boundaries[t.BeforeIndex] = true
+		if t.RequestedMS < 0 || t.RequestedMS > maxTransitionMS {
+			return Invalid("transition %d overlap must be 0..%dms", i, maxTransitionMS)
+		}
+	}
 	return nil
+}
+
+const maxTransitionMS = 10000
+
+// validatePlan guards the frozen source-to-output relationship persisted on
+// every render: placements stay in sheet order, overlaps stay non-negative
+// and bounded, and the declared duration equals span time minus overlaps.
+func validatePlan(p Plan, s Sheet) error {
+	if len(p.Placements) != len(s.Spans) {
+		return fmt.Errorf("plan placement count does not match sheet")
+	}
+	var expected int64
+	for i, span := range s.Spans {
+		pl := p.Placements[i]
+		if pl.SourceID != span.SourceID || pl.SourceInMS != span.InMS || pl.SourceOutMS != span.OutMS {
+			return fmt.Errorf("plan placement %d diverges from frozen sheet", i)
+		}
+		if i > 0 && pl.OutputInMS != p.Placements[i-1].OutputOutMS-overlapBefore(p, i) {
+			return fmt.Errorf("plan placement %d ignores its transition overlap", i)
+		}
+		expected += span.OutMS - span.InMS
+	}
+	var overlaps int64
+	for _, t := range p.Transitions {
+		if t.BeforeIndex < 1 || t.BeforeIndex >= len(s.Spans) || t.EffectiveMS < 0 || t.EffectiveMS > t.RequestedMS || t.RequestedMS > maxTransitionMS {
+			return fmt.Errorf("invalid frozen transition at boundary %d", t.BeforeIndex)
+		}
+		overlaps += t.EffectiveMS
+	}
+	expected -= overlaps
+	if expected != p.DurationMS {
+		return fmt.Errorf("plan duration %d does not match spans minus overlaps %d", p.DurationMS, expected)
+	}
+	return nil
+}
+
+func overlapBefore(p Plan, index int) int64 {
+	for _, t := range p.Transitions {
+		if t.BeforeIndex == index {
+			return t.EffectiveMS
+		}
+	}
+	return 0
 }
 func ValidateState(s State) error {
 	if s.Schema != 1 || s.Sources == nil || s.Sheets == nil || s.Recipes == nil || s.Renders == nil {
@@ -130,6 +204,9 @@ func ValidateState(s State) error {
 			return err
 		}
 		if err := ValidateRecipe(r.Recipe); err != nil {
+			return err
+		}
+		if err := validatePlan(r.Plan, r.Sheet); err != nil {
 			return err
 		}
 	}

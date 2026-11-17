@@ -38,6 +38,11 @@
       "timeout_seconds": 120
     },
     {
+      "workflow_id": "overlap-transition",
+      "command": "python3 scripts/workflow_check.py --workflow overlap-transition",
+      "timeout_seconds": 180
+    },
+    {
       "workflow_id": "loudness",
       "command": "python3 scripts/workflow_check.py --workflow loudness",
       "timeout_seconds": 120
